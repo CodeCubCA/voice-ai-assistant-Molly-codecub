@@ -23,6 +23,25 @@ polly_client = boto3.client(
     region_name=os.getenv("AWS_REGION", "ca-central-1")
 )
 
+# AWS Polly language and voice mapping
+# Maps translation language names to Polly language codes and default voices
+POLLY_LANGUAGE_MAP = {
+    "english": {"code": "en-US", "voice": "Joanna", "engine": "standard"},
+    "chinese (simplified)": {"code": "cmn-CN", "voice": "Zhiyu", "engine": "standard"},
+    "chinese (traditional)": {"code": "cmn-CN", "voice": "Zhiyu", "engine": "standard"},
+    "cantonese": {"code": "yue-CN", "voice": "Hiujin", "engine": "neural"},  # Cantonese only has neural voice
+    "french": {"code": "fr-FR", "voice": "Celine", "engine": "standard"},
+    "spanish": {"code": "es-ES", "voice": "Conchita", "engine": "standard"},
+    "german": {"code": "de-DE", "voice": "Marlene", "engine": "standard"},
+    "japanese": {"code": "ja-JP", "voice": "Mizuki", "engine": "standard"},
+    "korean": {"code": "ko-KR", "voice": "Seoyeon", "engine": "standard"},
+    "italian": {"code": "it-IT", "voice": "Carla", "engine": "standard"},
+    "portuguese": {"code": "pt-BR", "voice": "Vitoria", "engine": "standard"},
+    "russian": {"code": "ru-RU", "voice": "Tatyana", "engine": "standard"},
+    "arabic": {"code": "arb", "voice": "Zeina", "engine": "standard"},
+    "hindi": {"code": "hi-IN", "voice": "Aditi", "engine": "standard"},
+}
+
 # Page configuration
 st.set_page_config(
     page_title="AI Chatbot",
@@ -274,9 +293,25 @@ def split_text_for_tts(text, max_chars=2800):
     return chunks
 
 # Function to generate TTS audio using AWS Polly with retry mechanism
-def generate_tts_audio(text, voice_id="Joanna", max_retries=2):
-    """Convert text to speech using AWS Polly and return audio bytes"""
+def generate_tts_audio(text, voice_id="Joanna", language="english", max_retries=2):
+    """Convert text to speech using AWS Polly and return audio bytes
+
+    Args:
+        text: The text to convert to speech
+        voice_id: The Polly voice ID (used for English, ignored for other languages)
+        language: The target language (maps to appropriate voice and language code)
+        max_retries: Number of retry attempts
+    """
     import time
+
+    # Get language-specific settings from mapping
+    lang_settings = POLLY_LANGUAGE_MAP.get(language.lower(), POLLY_LANGUAGE_MAP["english"])
+    language_code = lang_settings["code"]
+    engine = lang_settings.get("engine", "standard")
+
+    # Use language-specific voice for non-English, otherwise use selected voice
+    if language.lower() != "english":
+        voice_id = lang_settings["voice"]
 
     # Clean text for TTS (remove markdown, emojis that might cause issues)
     clean_text = text.replace("**", "").replace("*", "").replace("`", "")
@@ -295,8 +330,8 @@ def generate_tts_audio(text, voice_id="Joanna", max_retries=2):
             try:
                 # Call AWS Polly to synthesize speech
                 response = polly_client.synthesize_speech(
-                    Engine='standard',
-                    LanguageCode='en-US',
+                    Engine=engine,
+                    LanguageCode=language_code,
                     OutputFormat='mp3',
                     Text=chunk,
                     VoiceId=voice_id
@@ -449,32 +484,32 @@ for idx, message in enumerate(st.session_state.messages):
                 )
 
             with st.spinner("🎵 Generating audio..."):
-                audio_bytes = generate_tts_audio(message["content"], st.session_state.polly_voice)
+                audio_bytes = generate_tts_audio(message["content"], st.session_state.polly_voice, st.session_state.translate_to)
                 if audio_bytes:
                     st.session_state.tts_audio[idx] = audio_bytes
 
         # Display audio player with styled container
         if idx in st.session_state.tts_audio:
-            # Create responsive columns for audio player
-            audio_col1, audio_col2 = st.columns([4, 1])
+            # Create responsive columns for audio player (3:1 ratio for better mobile)
+            audio_col1, audio_col2 = st.columns([3, 1])
             with audio_col1:
                 st.audio(st.session_state.tts_audio[idx], format="audio/mp3")
             with audio_col2:
                 st.markdown(
-                    "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 10px;'>🔊 Listen</p>",
+                    "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 8px; text-align: center;'>🔊</p>",
                     unsafe_allow_html=True
                 )
-        elif idx in st.session_state.tts_audio or message["content"].startswith("❌"):
+        elif message["content"].startswith("❌"):
             # Don't show error for error messages
             pass
         else:
             st.markdown(
-                "<p style='color: #e74c3c; font-size: 0.85em;'>❌ Audio unavailable</p>",
+                "<p style='color: #e74c3c; font-size: 0.85em;'>❌ Audio unavailable - try refreshing</p>",
                 unsafe_allow_html=True
             )
 
         # Add subtle divider between messages
-        st.markdown("<hr style='border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='margin: 15px 0;'></div>", unsafe_allow_html=True)
 
 # Determine prompt from voice or text
 prompt = None
@@ -557,18 +592,18 @@ if prompt:
             )
 
         with st.spinner("🎵 Generating audio..."):
-            audio_bytes = generate_tts_audio(full_response, st.session_state.polly_voice)
+            audio_bytes = generate_tts_audio(full_response, st.session_state.polly_voice, st.session_state.translate_to)
             if audio_bytes:
                 st.session_state.tts_audio[new_msg_idx] = audio_bytes
 
     # Display audio player for the new response with styled layout
     if new_msg_idx in st.session_state.tts_audio:
-        audio_col1, audio_col2 = st.columns([4, 1])
+        audio_col1, audio_col2 = st.columns([3, 1])
         with audio_col1:
             st.audio(st.session_state.tts_audio[new_msg_idx], format="audio/mp3")
         with audio_col2:
             st.markdown(
-                "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 10px;'>🔊 Listen</p>",
+                "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 8px; text-align: center;'>🔊</p>",
                 unsafe_allow_html=True
             )
 
@@ -671,6 +706,7 @@ with st.sidebar:
                 "🇺🇸 English": "english",
                 "🇨🇳 Chinese (Simplified)": "chinese (simplified)",
                 "🇹🇼 Chinese (Traditional)": "chinese (traditional)",
+                "🇭🇰 Cantonese": "cantonese",
                 "🇫🇷 French": "french",
                 "🇪🇸 Spanish": "spanish",
                 "🇩🇪 German": "german",
@@ -681,7 +717,7 @@ with st.sidebar:
                 "🇷🇺 Russian": "russian",
                 "🇸🇦 Arabic": "arabic",
                 "🇮🇳 Hindi": "hindi"
-        }
+            }
 
             selected_output_language = st.selectbox(
                 "Select language to translate to:",
