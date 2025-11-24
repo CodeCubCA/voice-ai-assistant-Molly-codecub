@@ -6,12 +6,22 @@ from audio_recorder_streamlit import audio_recorder
 import speech_recognition as sr
 import io
 from deep_translator import GoogleTranslator
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize Gemini client with API key from environment variable
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+# Initialize AWS Polly client
+polly_client = boto3.client(
+    'polly',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION", "ca-central-1")
+)
 
 # Page configuration
 st.set_page_config(
@@ -216,6 +226,109 @@ if "translate_to" not in st.session_state:
     st.session_state.translate_to = "english"
 if "show_translation" not in st.session_state:
     st.session_state.show_translation = False
+if "tts_audio" not in st.session_state:
+    st.session_state.tts_audio = {}  # Store generated audio by message index
+if "processing" not in st.session_state:
+    st.session_state.processing = False
+if "last_audio_bytes" not in st.session_state:
+    st.session_state.last_audio_bytes = None
+if "polly_voice" not in st.session_state:
+    st.session_state.polly_voice = "Joanna"
+
+# Function to split text into chunks for Polly (max 3000 chars per request)
+def split_text_for_tts(text, max_chars=2800):
+    """Split text into chunks at sentence boundaries for TTS processing"""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+
+    # Split by sentences (period, exclamation, question mark followed by space)
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) + 1 <= max_chars:
+            current_chunk += sentence + " "
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            # If single sentence is too long, split by commas or just truncate
+            if len(sentence) > max_chars:
+                words = sentence.split()
+                current_chunk = ""
+                for word in words:
+                    if len(current_chunk) + len(word) + 1 <= max_chars:
+                        current_chunk += word + " "
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = word + " "
+            else:
+                current_chunk = sentence + " "
+
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+# Function to generate TTS audio using AWS Polly with retry mechanism
+def generate_tts_audio(text, voice_id="Joanna", max_retries=2):
+    """Convert text to speech using AWS Polly and return audio bytes"""
+    import time
+
+    # Clean text for TTS (remove markdown, emojis that might cause issues)
+    clean_text = text.replace("**", "").replace("*", "").replace("`", "")
+    clean_text = clean_text.replace("#", "").replace("---", "").replace("```", "")
+    clean_text = " ".join(clean_text.split())  # Normalize whitespace
+
+    # Split text into chunks if too long
+    text_chunks = split_text_for_tts(clean_text)
+    all_audio_bytes = []
+
+    for chunk in text_chunks:
+        if not chunk.strip():
+            continue
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Call AWS Polly to synthesize speech
+                response = polly_client.synthesize_speech(
+                    Engine='standard',
+                    LanguageCode='en-US',
+                    OutputFormat='mp3',
+                    Text=chunk,
+                    VoiceId=voice_id
+                )
+
+                # Read the audio stream
+                if "AudioStream" in response:
+                    audio_bytes = response["AudioStream"].read()
+                    all_audio_bytes.append(audio_bytes)
+                    break
+                else:
+                    if attempt < max_retries:
+                        time.sleep(0.5)
+                        continue
+
+            except (BotoCoreError, ClientError) as e:
+                if attempt < max_retries:
+                    time.sleep(0.5)
+                    continue
+                st.error(f"❌ Audio generation failed: {str(e)}")
+                return None
+            except Exception as e:
+                if attempt < max_retries:
+                    time.sleep(0.5)
+                    continue
+                st.error(f"❌ TTS Error: {str(e)}")
+                return None
+
+    # Combine all audio chunks
+    if all_audio_bytes:
+        return b''.join(all_audio_bytes)
+    return None
 
 # Function to transcribe audio with language support
 def transcribe_audio(audio_bytes, language="en-US"):
@@ -254,18 +367,23 @@ st.markdown("""
     </p>
 """, unsafe_allow_html=True)
 
-# Audio recorder centered
-col1, col2, col3 = st.columns([1, 1, 1])
-with col2:
+# Audio recorder centered - responsive layout for mobile
+mic_col1, mic_col2, mic_col3 = st.columns([1, 2, 1])
+with mic_col2:
     audio_bytes = audio_recorder(
         text="",
         recording_color="#e74c3c",
         neutral_color="#667eea",
         icon_name="microphone",
-        icon_size="2x",
+        icon_size="3x",  # Larger for better mobile accessibility
+    )
+    st.markdown(
+        "<p style='text-align: center; color: rgba(255,255,255,0.6); font-size: 0.85em; margin-top: 5px;'>"
+        "Click to record</p>",
+        unsafe_allow_html=True
     )
 
-# Text input box below microphone
+# Text input box below microphone - full width for mobile
 user_input = st.text_input(
     "Message Input",
     placeholder="Type your message here...",
@@ -312,10 +430,51 @@ if audio_bytes:
     else:
         st.error(f"❌ {transcribed_text}")
 
-# Display chat history
-for message in st.session_state.messages:
+# Display chat history with audio players for assistant messages
+for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+
+    # Display audio player OUTSIDE chat_message for assistant messages
+    if message["role"] == "assistant":
+        # Generate TTS if not already generated for this message
+        if idx not in st.session_state.tts_audio:
+            # Show warning for long messages
+            msg_length = len(message["content"])
+            if msg_length > 500:
+                st.markdown(
+                    "<p style='color: rgba(255,255,255,0.6); font-size: 0.85em; margin: 5px 0;'>"
+                    "⏳ Long message - audio generation may take a moment...</p>",
+                    unsafe_allow_html=True
+                )
+
+            with st.spinner("🎵 Generating audio..."):
+                audio_bytes = generate_tts_audio(message["content"], st.session_state.polly_voice)
+                if audio_bytes:
+                    st.session_state.tts_audio[idx] = audio_bytes
+
+        # Display audio player with styled container
+        if idx in st.session_state.tts_audio:
+            # Create responsive columns for audio player
+            audio_col1, audio_col2 = st.columns([4, 1])
+            with audio_col1:
+                st.audio(st.session_state.tts_audio[idx], format="audio/mp3")
+            with audio_col2:
+                st.markdown(
+                    "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 10px;'>🔊 Listen</p>",
+                    unsafe_allow_html=True
+                )
+        elif idx in st.session_state.tts_audio or message["content"].startswith("❌"):
+            # Don't show error for error messages
+            pass
+        else:
+            st.markdown(
+                "<p style='color: #e74c3c; font-size: 0.85em;'>❌ Audio unavailable</p>",
+                unsafe_allow_html=True
+            )
+
+        # Add subtle divider between messages
+        st.markdown("<hr style='border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
 
 # Determine prompt from voice or text
 prompt = None
@@ -386,6 +545,33 @@ if prompt:
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
+    # Generate TTS for the new response (skip for error messages)
+    new_msg_idx = len(st.session_state.messages) - 1
+    if new_msg_idx not in st.session_state.tts_audio and not full_response.startswith("❌"):
+        # Show warning for long messages
+        if len(full_response) > 500:
+            st.markdown(
+                "<p style='color: rgba(255,255,255,0.6); font-size: 0.85em; margin: 5px 0;'>"
+                "⏳ Generating audio for long response...</p>",
+                unsafe_allow_html=True
+            )
+
+        with st.spinner("🎵 Generating audio..."):
+            audio_bytes = generate_tts_audio(full_response, st.session_state.polly_voice)
+            if audio_bytes:
+                st.session_state.tts_audio[new_msg_idx] = audio_bytes
+
+    # Display audio player for the new response with styled layout
+    if new_msg_idx in st.session_state.tts_audio:
+        audio_col1, audio_col2 = st.columns([4, 1])
+        with audio_col1:
+            st.audio(st.session_state.tts_audio[new_msg_idx], format="audio/mp3")
+        with audio_col2:
+            st.markdown(
+                "<p style='color: rgba(255,255,255,0.7); font-size: 0.8em; margin-top: 10px;'>🔊 Listen</p>",
+                unsafe_allow_html=True
+            )
+
 # Sidebar with info
 with st.sidebar:
     # Large animated robot icon at top
@@ -409,82 +595,136 @@ with st.sidebar:
 
     # Message count
     if len(st.session_state.messages) > 0:
-        st.metric("💬 Messages", len(st.session_state.messages))
+        st.metric("💬 Messages", len(st.session_state.messages), help="Total messages in conversation")
         st.divider()
 
-    # Language selection for voice input
-    st.markdown("### 🎤 Speak In")
+    # Voice & Audio Settings in Expander
+    with st.expander("🔊 Voice & Audio Settings", expanded=True):
+        # AWS Polly Voice Selection
+        st.markdown("**AI Voice**")
 
-    input_language_options = {
-        "🇺🇸 English": "en-US",
-        "🇨🇳 Chinese (Mandarin)": "zh-CN",
-        "🇭🇰 Cantonese": "yue-Hant-HK",
-        "🇫🇷 French": "fr-FR"
-    }
-
-    selected_input_language = st.selectbox(
-        "Select language to speak:",
-        options=list(input_language_options.keys()),
-        index=0,
-        label_visibility="collapsed",
-        key="input_lang"
-    )
-
-    st.session_state.voice_language = input_language_options[selected_input_language]
-
-    # Toggle button for translation
-    if st.button("🌐 Enable Translation" if not st.session_state.show_translation else "✅ Translation Enabled",
-                 use_container_width=True,
-                 type="primary" if st.session_state.show_translation else "secondary"):
-        st.session_state.show_translation = not st.session_state.show_translation
-        st.rerun()
-
-    # Show translation options only if enabled
-    if st.session_state.show_translation:
-        st.markdown("### 🌐 Translate To")
-
-        output_language_options = {
-            "🇺🇸 English": "english",
-            "🇨🇳 Chinese (Simplified)": "chinese (simplified)",
-            "🇹🇼 Chinese (Traditional)": "chinese (traditional)",
-            "🇫🇷 French": "french",
-            "🇪🇸 Spanish": "spanish",
-            "🇩🇪 German": "german",
-            "🇯🇵 Japanese": "japanese",
-            "🇰🇷 Korean": "korean",
-            "🇮🇹 Italian": "italian",
-            "🇵🇹 Portuguese": "portuguese",
-            "🇷🇺 Russian": "russian",
-            "🇸🇦 Arabic": "arabic",
-            "🇮🇳 Hindi": "hindi"
+        polly_voice_options = {
+            "👩 Joanna (Female)": "Joanna",
+            "👨 Matthew (Male)": "Matthew",
+            "👧 Ivy (Child)": "Ivy",
+            "👩 Salli (Female)": "Salli",
+            "👨 Joey (Male)": "Joey",
+            "👩 Kendra (Female)": "Kendra",
+            "👨 Justin (Male)": "Justin"
         }
 
-        selected_output_language = st.selectbox(
-            "Select language to translate to:",
-            options=list(output_language_options.keys()),
+        selected_voice = st.selectbox(
+            "Select AI voice:",
+            options=list(polly_voice_options.keys()),
             index=0,
             label_visibility="collapsed",
-            key="output_lang"
+            key="voice_select",
+            help="Choose the voice for AI responses"
         )
 
-        st.session_state.translate_to = output_language_options[selected_output_language]
+        new_voice = polly_voice_options[selected_voice]
+        if new_voice != st.session_state.polly_voice:
+            st.session_state.polly_voice = new_voice
+            # Clear cached audio when voice changes
+            st.session_state.tts_audio = {}
 
-        st.markdown("""
-        <p style='font-size: 0.85em; color: #667eea; margin-top: 10px;'>
-            💡 Your voice will be translated automatically!
-        </p>
-        """, unsafe_allow_html=True)
+        st.markdown("---")
+
+        # Language selection for voice input
+        st.markdown("**🎤 Speak In**")
+
+        input_language_options = {
+            "🇺🇸 English": "en-US",
+            "🇨🇳 Chinese (Mandarin)": "zh-CN",
+            "🇭🇰 Cantonese": "yue-Hant-HK",
+            "🇫🇷 French": "fr-FR"
+        }
+
+        selected_input_language = st.selectbox(
+            "Select language to speak:",
+            options=list(input_language_options.keys()),
+            index=0,
+            label_visibility="collapsed",
+            key="input_lang",
+            help="Language you'll speak in for voice input"
+        )
+
+        st.session_state.voice_language = input_language_options[selected_input_language]
 
     st.divider()
 
-    # Add space before bottom section
-    st.markdown("<br>" * 3, unsafe_allow_html=True)
+    # Translation Settings in Expander
+    with st.expander("🌐 Translation Settings", expanded=False):
+        # Toggle button for translation
+        if st.button("🌐 Enable Translation" if not st.session_state.show_translation else "✅ Translation Enabled",
+                     use_container_width=True,
+                     type="primary" if st.session_state.show_translation else "secondary",
+                     help="Translate your voice input to another language"):
+            st.session_state.show_translation = not st.session_state.show_translation
+            st.rerun()
 
+        # Show translation options only if enabled
+        if st.session_state.show_translation:
+            st.markdown("**Translate To:**")
+
+            output_language_options = {
+                "🇺🇸 English": "english",
+                "🇨🇳 Chinese (Simplified)": "chinese (simplified)",
+                "🇹🇼 Chinese (Traditional)": "chinese (traditional)",
+                "🇫🇷 French": "french",
+                "🇪🇸 Spanish": "spanish",
+                "🇩🇪 German": "german",
+                "🇯🇵 Japanese": "japanese",
+                "🇰🇷 Korean": "korean",
+                "🇮🇹 Italian": "italian",
+                "🇵🇹 Portuguese": "portuguese",
+                "🇷🇺 Russian": "russian",
+                "🇸🇦 Arabic": "arabic",
+                "🇮🇳 Hindi": "hindi"
+        }
+
+            selected_output_language = st.selectbox(
+                "Select language to translate to:",
+                options=list(output_language_options.keys()),
+                index=0,
+                label_visibility="collapsed",
+                key="output_lang",
+                help="Target language for translation"
+            )
+
+            st.session_state.translate_to = output_language_options[selected_output_language]
+
+            st.info("💡 Your voice will be translated automatically!")
+
+    st.divider()
+
+    # Quick Tips Section
+    with st.expander("💡 Quick Tips", expanded=False):
+        st.markdown("""
+        **Voice Input:**
+        - Click the microphone to start recording
+        - Speak clearly for best results
+        - Select your language before recording
+
+        **Audio Playback:**
+        - Each AI response has an audio player
+        - Change voice to regenerate audio
+        - Long messages may take longer
+
+        **Translation:**
+        - Enable translation in settings
+        - Speak in one language, get response in another
+        """)
+
+    st.divider()
+
+    # About Section
     st.markdown("### 💡 About")
 
     st.info("""
     This is an AI chatbot powered by:
     - **Google Gemini API** (gemini-2.5-flash)
+    - **AWS Polly** for text-to-speech
     - **Streamlit** for the interface
 
     Ask me anything and I'll do my best to help!
@@ -493,6 +733,7 @@ with st.sidebar:
     st.divider()
 
     # Clear chat button at bottom
-    if st.button("🗑️ Clear Chat History", use_container_width=True):
+    if st.button("🗑️ Clear Chat History", use_container_width=True, help="Remove all messages and start fresh"):
         st.session_state.messages = []
+        st.session_state.tts_audio = {}  # Also clear audio cache
         st.rerun()

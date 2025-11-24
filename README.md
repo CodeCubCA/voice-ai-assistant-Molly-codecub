@@ -1,12 +1,12 @@
 # 🤖 AI Chatbot - Multilingual Voice-Enabled Assistant
 
-Your personal AI-powered assistant with voice input and multilingual translation capabilities!
+Your personal AI-powered assistant with voice input, text-to-speech output, and multilingual translation capabilities!
 
 ---
 
 ## 📖 About
 
-The **AI Chatbot** is an intelligent conversational assistant powered by Google's Gemini 2.5 Flash model. It features voice input with speech recognition, real-time translation across 13+ languages, and a beautiful modern purple gradient interface. Whether you need help with questions, creative tasks, or just want to chat in your native language, this AI assistant has you covered!
+The **AI Chatbot** is an intelligent conversational assistant powered by Google's Gemini 2.5 Flash model. It features voice input with speech recognition, text-to-speech output powered by AWS Polly, real-time translation across 13+ languages, and a beautiful modern purple gradient interface. Whether you need help with questions, creative tasks, or just want to chat in your native language, this AI assistant has you covered!
 
 ---
 
@@ -17,6 +17,10 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
   - Click the microphone button to record
   - Supports English, Chinese (Mandarin), Cantonese, and French
   - Automatic speech-to-text transcription
+- 🔊 **Text-to-Speech Output** - Hear AI responses spoken aloud
+  - Powered by AWS Polly with high-quality voices
+  - Choose from multiple voices (Joanna, Matthew, Ivy, Salli, Joey, Kendra, Justin)
+  - Audio player for each AI response
 - 🌐 **Multilingual Translation** - Translate between 13+ languages
   - Speak in one language, translate to another
   - Supported languages: English, Chinese (Simplified/Traditional), French, Spanish, German, Japanese, Korean, Italian, Portuguese, Russian, Arabic, Hindi
@@ -38,10 +42,13 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Google_Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS_Polly-232F3E?style=for-the-badge&logo=amazonaws&logoColor=white)
 
 - **Python 3.12+** - Programming language
 - **Streamlit** - Web application framework for rapid UI development
 - **Google Gemini API** - Advanced AI model (gemini-2.5-flash)
+- **AWS Polly** - Text-to-speech synthesis with natural voices
+- **boto3** - AWS SDK for Python
 - **SpeechRecognition** - Voice input processing
 - **deep-translator** - Multilingual translation
 - **audio-recorder-streamlit** - Audio recording component
@@ -54,6 +61,7 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
 ### Prerequisites
 - Python 3.12 or higher
 - Google Gemini API key (free tier available)
+- AWS account with Polly access (for text-to-speech)
 - Git installed on your computer
 - Microphone (for voice input feature)
 
@@ -77,9 +85,12 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
    touch .env
    ```
 
-   Add your Google Gemini API key to the `.env` file:
+   Add your API keys to the `.env` file:
    ```env
    GEMINI_API_KEY=your_gemini_api_key_here
+   AWS_ACCESS_KEY_ID=your_aws_access_key
+   AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+   AWS_REGION=ca-central-1
    ```
 
 4. **Run the application**
@@ -140,7 +151,24 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
      GEMINI_API_KEY=your_api_key_here
      ```
 
-**Note:** Keep your API key secret! Never commit it to GitHub.
+### How to Get Your AWS Credentials (for Text-to-Speech)
+
+1. **Create an AWS Account**
+   - Go to [aws.amazon.com](https://aws.amazon.com) and sign up
+
+2. **Create IAM User with Polly Access**
+   - Go to IAM Console → Users → Create User
+   - Attach the `AmazonPollyReadOnlyAccess` policy
+   - Create access keys for the user
+
+3. **Add AWS credentials to your `.env` file**
+   ```env
+   AWS_ACCESS_KEY_ID=your_access_key
+   AWS_SECRET_ACCESS_KEY=your_secret_key
+   AWS_REGION=ca-central-1
+   ```
+
+**Note:** Keep your API keys secret! Never commit them to GitHub.
 
 ---
 
@@ -182,14 +210,15 @@ ai-chatbox/
 
 ## 🚧 Future Improvements
 
+- [x] 🔊 Text-to-speech for AI responses (AWS Polly)
 - [ ] 🎨 Additional theme options (light mode, custom colors)
-- [ ] 🔊 Text-to-speech for AI responses
 - [ ] 📱 Mobile app version
 - [ ] 💾 Save and export chat history
 - [ ] 🎯 Specialized AI personalities
 - [ ] 📊 Conversation analytics
 - [ ] 🔒 User authentication
 - [ ] 🌍 Expanded language support (50+ languages)
+- [ ] 🔊 Multi-language TTS support
 
 ---
 
