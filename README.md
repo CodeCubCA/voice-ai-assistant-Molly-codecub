@@ -56,6 +56,24 @@ The **AI Chatbot** is an intelligent conversational assistant powered by Google'
 
 ---
 
+## 🌐 Live Deployments
+
+This AI Chatbot is deployed on multiple platforms for easy access:
+
+- **Hugging Face Spaces**: [https://huggingface.co/spaces/mollycodecub/voice-ai-assistant](https://huggingface.co/spaces/mollycodecub/voice-ai-assistant)
+  - Easy one-click deployment
+  - Free hosting for AI/ML applications
+  - Integrated with Streamlit
+
+- **Render**: Coming soon!
+  - Production-ready deployment
+  - Custom domain support
+  - Automatic HTTPS
+
+Try the live demo on Hugging Face Spaces - no installation required!
+
+---
+
 ## 🚀 How to Run Locally
 
 ### Prerequisites
