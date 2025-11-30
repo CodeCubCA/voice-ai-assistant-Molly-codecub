@@ -1,3 +1,15 @@
+---
+title: AI Chatbot - Multilingual Voice Assistant
+emoji: 🤖
+colorFrom: purple
+colorTo: pink
+sdk: streamlit
+sdk_version: "1.31.0"
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🤖 AI Chatbot - Multilingual Voice-Enabled Assistant
 
 Your personal AI-powered assistant with voice input, text-to-speech output, and multilingual translation capabilities!
