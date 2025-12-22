@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import google.generativeai as genai
 from dotenv import load_dotenv
 from audio_recorder_streamlit import audio_recorder
 import speech_recognition as sr
@@ -8,12 +7,18 @@ import io
 from deep_translator import GoogleTranslator
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from huggingface_hub import InferenceClient
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize Gemini client with API key from environment variable
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Initialize Hugging Face Inference Client
+hf_token = os.getenv("HUGGINGFACE_TOKEN")
+if not hf_token:
+    st.error("❌ HUGGINGFACE_TOKEN not found in .env file")
+    st.stop()
+
+client = InferenceClient(token=hf_token)
 
 # Initialize AWS Polly client
 polly_client = boto3.client(
@@ -369,6 +374,12 @@ def generate_tts_audio(text, voice_id="Joanna", language="english", max_retries=
 def transcribe_audio(audio_bytes, language="en-US"):
     """Convert audio bytes to text using speech recognition"""
     recognizer = sr.Recognizer()
+
+    # Adjust recognizer settings for better accuracy
+    recognizer.energy_threshold = 300  # Adjust sensitivity
+    recognizer.dynamic_energy_threshold = True
+    recognizer.pause_threshold = 0.8  # Seconds of non-speaking audio before a phrase is complete
+
     try:
         # Save audio to temporary wav file for processing
         import tempfile
@@ -378,21 +389,24 @@ def transcribe_audio(audio_bytes, language="en-US"):
 
         # Load audio file and transcribe with specified language
         with sr.AudioFile(temp_audio_path) as source:
+            # Adjust for ambient noise
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
             audio_data = recognizer.record(source)
-            # Recognize speech in the specified language
-            text = recognizer.recognize_google(audio_data, language=language)
+
+            # Recognize speech in the specified language with show_all to get confidence
+            text = recognizer.recognize_google(audio_data, language=language, show_all=False)
 
         # Clean up temp file
         import os
         os.unlink(temp_audio_path)
 
-        return text
+        return text if text else "Could not detect speech. Please try again."
     except sr.UnknownValueError:
-        return "Could not understand audio. Please speak clearly."
+        return "Could not understand audio. Please speak louder and more clearly, then try again."
     except sr.RequestError as e:
-        return f"Speech recognition service error: {e}"
+        return f"Speech recognition service error: {e}. Please check your internet connection."
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Transcription error: {str(e)}. Please try recording again."
 
 # Voice input section with microphone and text input
 st.markdown("""
@@ -429,15 +443,17 @@ user_input = st.text_input(
 st.markdown("</div>", unsafe_allow_html=True)
 
 # Process audio if recorded
-if audio_bytes:
+if audio_bytes and audio_bytes != st.session_state.last_audio_bytes:
+    st.session_state.last_audio_bytes = audio_bytes
+
     # Transcribe audio using selected language
-    with st.spinner("🎧 Transcribing audio..."):
+    with st.spinner("🎧 Processing your voice... Please wait."):
         transcribed_text = transcribe_audio(audio_bytes, st.session_state.voice_language)
 
     # Handle transcription result
-    if transcribed_text and not any(transcribed_text.startswith(prefix) for prefix in ["Error", "Could not", "Speech recognition"]):
+    if transcribed_text and not any(transcribed_text.startswith(prefix) for prefix in ["Error", "Could not", "Speech recognition", "Transcription error"]):
         # Show original transcription
-        st.success(f"✅ **Transcribed:** {transcribed_text}")
+        st.success(f"✅ **Heard you say:** {transcribed_text}")
 
         # Translate if translation is enabled and target language is different
         # Map speech recognition language codes to Google Translator language codes
@@ -456,7 +472,7 @@ if audio_bytes:
                 try:
                     translated_text = GoogleTranslator(source=source_lang, target=st.session_state.translate_to).translate(transcribed_text)
                     st.session_state.voice_text = translated_text
-                    # Don't show the info message - just translate silently
+                    st.info(f"🌐 **Translated to {st.session_state.translate_to}:** {translated_text}")
                 except Exception as e:
                     # Silently use original text if translation fails
                     st.session_state.voice_text = transcribed_text
@@ -464,6 +480,7 @@ if audio_bytes:
             st.session_state.voice_text = transcribed_text
     else:
         st.error(f"❌ {transcribed_text}")
+        st.info("💡 **Tips for better recognition:**\n- Speak clearly and at a moderate pace\n- Reduce background noise\n- Hold the microphone closer\n- Ensure good internet connection")
 
 # Display chat history with audio players for assistant messages
 for idx, message in enumerate(st.session_state.messages):
@@ -553,28 +570,47 @@ if prompt:
             else:
                 conversation_history.append({"role": "model", "parts": [msg["content"]]})
 
-        # Stream response from Gemini API
+        # Stream response from Hugging Face API
         try:
-            # Initialize the model
-            model = genai.GenerativeModel("gemini-2.5-flash")
+            # Build messages for the API
+            messages = []
 
-            # Start chat with history
-            chat = model.start_chat(history=conversation_history)
+            # Add system prompt
+            messages.append({
+                "role": "system",
+                "content": system_prompt
+            })
 
-            # Send message and stream response
-            response = chat.send_message(prompt, stream=True)
+            # Add conversation history
+            for msg in st.session_state.messages[:-1]:  # Exclude current message
+                messages.append({
+                    "role": msg["role"] if msg["role"] == "user" else "assistant",
+                    "content": msg["content"]
+                })
 
-            # Display streaming response
-            for chunk in response:
-                if chunk.text:
-                    full_response += chunk.text
+            # Add current user message
+            messages.append({
+                "role": "user",
+                "content": prompt
+            })
+
+            # Stream response from Hugging Face
+            for message in client.chat_completion(
+                messages=messages,
+                model="meta-llama/Llama-3.3-70B-Instruct",
+                max_tokens=2000,
+                stream=True,
+            ):
+                if message.choices and message.choices[0].delta.content:
+                    chunk_text = message.choices[0].delta.content
+                    full_response += chunk_text
                     message_placeholder.markdown(full_response + "▌")
 
             # Display final response
             message_placeholder.markdown(full_response)
 
         except Exception as e:
-            full_response = f"❌ Error: {str(e)}\n\nPlease check your GEMINI_API_KEY in the .env file."
+            full_response = f"❌ Error: {str(e)}\n\nPlease check your HUGGINGFACE_TOKEN in the .env file."
             message_placeholder.markdown(full_response)
 
     # Add assistant response to chat history
@@ -759,7 +795,7 @@ with st.sidebar:
 
     st.info("""
     This is an AI chatbot powered by:
-    - **Google Gemini API** (gemini-2.5-flash)
+    - **Hugging Face API** (Llama 3.3 70B Instruct)
     - **AWS Polly** for text-to-speech
     - **Streamlit** for the interface
 
